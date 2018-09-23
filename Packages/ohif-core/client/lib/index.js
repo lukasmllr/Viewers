@@ -5,3 +5,5 @@ import './ui.js';
 import './utils.js';
 import './viewer.js';
 import './user.js';
+
+import './DICOMWeb/';

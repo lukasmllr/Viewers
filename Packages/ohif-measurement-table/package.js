@@ -4,6 +4,10 @@ Package.describe({
     version: '0.0.1'
 });
 
+Npm.depends({
+    'dicomweb-client': 'file:///Users/Erik/Projects/OHIF/dicomweb-client'//'0.2.0'
+});
+
 Package.onUse(function(api) {
     api.versionsFrom('1.6');
 

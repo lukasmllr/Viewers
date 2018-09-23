@@ -1,6 +1,9 @@
 import { OHIF } from 'meteor/ohif:core';
-import { DICOMWeb } from 'meteor/ohif:dicomweb-client';
+import DICOMwebClient from 'dicomweb-client';
+
 import { parseFloatArray } from '../../lib/parseFloatArray';
+
+const { DICOMWeb } = OHIF;
 
 /**
  * Simple cache schema for retrieved color palettes.
@@ -106,11 +109,28 @@ function getPaletteColor(server, instance, tag, lutDescriptor) {
     const numLutEntries = lutDescriptor[0];
     const bits = lutDescriptor[2];
     const uri = WADOProxy.convertURL(instance[tag].BulkDataURI, server)
-    const bulkDataPromise = DICOMWeb.getBulkData(uri);
+    // TODO: Parse URI and ensure this works when passed to DWC
 
-    return bulkDataPromise.then(data => {
-        for (var i = 0; i < numLutEntries; i++) {
-            if(bits === 16) {
+    // TODO: Move this elsewhere so it's not duplicated.
+    // TODO: Fix HTTP Basic Auth
+    let headers = {}
+    const apiToken = OHIF.user.getAccessToken();
+    if (apiToken) {
+        headers.Authorization = `Bearer ${apiToken}`;
+    }
+
+    const config = {
+        url: server.wadoRoot,
+        headers
+    };
+    const dicomWeb = new DICOMwebClient.api.DICOMwebClient(config);
+    const options = {
+        BulkDataURI: instance[tag].BulkDataURI
+    };
+
+    return dicomWeb.retrieveBulkData(options).then(data => {
+        for (let i = 0; i < numLutEntries; i++) {
+            if (bits === 16) {
                 lut[i] = data[i * 65536] + data[i + 1];
             } else {
                 lut[i] = data[i];
@@ -202,9 +222,6 @@ function getRadiopharmaceuticalInfo(instance) {
  * @returns {{seriesList: Array, patientName: *, patientId: *, accessionNumber: *, studyDate: *, modalities: *, studyDescription: *, imageCount: *, studyInstanceUid: *}}
  */
 async function resultDataToStudyMetadata(server, studyInstanceUid, resultData) {
-    const seriesMap = {};
-    const seriesList = [];
-
     if (!resultData.length) {
         return;
     }
@@ -215,7 +232,9 @@ async function resultDataToStudyMetadata(server, studyInstanceUid, resultData) {
     }
 
     const studyData = {
-        seriesList,
+        seriesList: [],
+        studyInstanceUid,
+        wadoUriRoot: server.wadoUriRoot,
         patientName: DICOMWeb.getName(anInstance['00100010']),
         patientId: DICOMWeb.getString(anInstance['00100020']),
         patientAge: DICOMWeb.getNumber(anInstance['00101010']),
@@ -230,9 +249,12 @@ async function resultDataToStudyMetadata(server, studyInstanceUid, resultData) {
         institutionName: DICOMWeb.getString(anInstance['00080080'])
     };
 
+    const seriesMap = {};
+
     await Promise.all(resultData.map(async function(instance) {
-        var seriesInstanceUid = DICOMWeb.getString(instance['0020000E']);
-        var series = seriesMap[seriesInstanceUid];
+        const seriesInstanceUid = DICOMWeb.getString(instance['0020000E']);
+        let series = seriesMap[seriesInstanceUid];
+
         if (!series) {
             series = {
                 seriesDescription: DICOMWeb.getString(instance['0008103E']),
@@ -244,7 +266,7 @@ async function resultDataToStudyMetadata(server, studyInstanceUid, resultData) {
                 instances: []
             };
             seriesMap[seriesInstanceUid] = series;
-            seriesList.push(series);
+            studyData.seriesList.push(series);
         }
 
         const sopInstanceUid = DICOMWeb.getString(instance['00080018']);
@@ -331,22 +353,31 @@ async function resultDataToStudyMetadata(server, studyInstanceUid, resultData) {
 }
 
 /**
- * Retrieved Study MetaData from a DICOM server using a WADO call
+ * Retrieve Study MetaData from a DICOM server using a WADO call
+ *
  * @param server
  * @param studyInstanceUid
  * @returns {Promise}
  */
 OHIF.studies.services.WADO.RetrieveMetadata = async function(server, studyInstanceUid) {
-    const url = buildUrl(server, studyInstanceUid);
+    // TODO: Move this elsewhere so it's not duplicated.
+    // TODO: Fix HTTP Basic Auth
+    let headers = {}
+    const apiToken = OHIF.user.getAccessToken();
+    if (apiToken) {
+        headers.Authorization = `Bearer ${apiToken}`;
+    }
 
-    return new Promise((resolve, reject) => {
-        DICOMWeb.getJSON(url, server.requestOptions).then(result => {
-            resultDataToStudyMetadata(server, studyInstanceUid, result).then((study) => {
-                study.wadoUriRoot = server.wadoUriRoot;
-                study.studyInstanceUid = studyInstanceUid;
+    const config = {
+        url: server.wadoRoot,
+        headers
+    };
+    const dicomWeb = new DICOMwebClient.api.DICOMwebClient(config);
+    const options = {
+        studyInstanceUID: studyInstanceUid
+    };
 
-                resolve(study);
-            }, reject);
-        }, reject);
+    return dicomWeb.retrieveStudyMetadata(options).then(result => {
+        return resultDataToStudyMetadata(server, studyInstanceUid, result);
     });
 };

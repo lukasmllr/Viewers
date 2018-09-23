@@ -1,60 +1,69 @@
 import { dcmjs } from 'meteor/ohif:cornerstone';
 import retrieveDataFromSR from './retrieveDataFromSR';
 import retrieveDataFromMeasurements from './retrieveDataFromMeasurements';
-import {
-    multipartEncode
-} from './srUtils';
+
+import DICOMwebClient from 'dicomweb-client';
 
 const retrieveMeasurementFromSR = async (series) => {
-    const instance = series.getFirstInstance();
-    const options  = {
-        method: 'GET',
-        responseType: 'arraybuffer',
-    };
-    const url = instance.getDataProperty('wadouri');
+    const server = OHIF.servers.getCurrentServer();
+    const url = WADOProxy.convertURL(server.wadoRoot, server);
 
-    try {
-        const result = await DICOMWeb.makeRequest(url, options);
-        const data = await result.arrayBuffer();
-        const measurementData = retrieveDataFromSR(data);
-        return Promise.resolve(measurementData);
-    } catch(error) {
-        return Promise.reject(error);
+    // TODO: URL is most likely wrong
+    // TODO: Move this elsewhere so it's not duplicated.
+    // TODO: Fix HTTP Basic Auth
+    let headers = {}
+    const apiToken = OHIF.user.getAccessToken();
+    if (apiToken) {
+        headers.Authorization = `Bearer ${apiToken}`;
     }
+
+    const config = {
+        url,
+        headers
+    };
+
+    const dicomWeb = new DICOMwebClient.api.DICOMwebClient(config);
+
+    const instance = series.getFirstInstance();
+    const options = {
+        studyInstanceUID: instance.getStudyInstanceUID(),
+        seriesInstanceUID: instance.getSeriesInstanceUID(),
+        sopInstanceUID: instance.getSOPInstanceUID(),
+    };
+
+    return dicomWeb.retrieveInstance(options).then(retrieveDataFromSR);
 };
 
-/**
- * Retrieve the DICOMWeb STOW-RS URL for the current server.
- *
- * See ftp://medical.nema.org/medical/dicom/current/output/html/part18.html#sect_6.6.1.1
- *
- * @return {string|null} The URL, rerouted to the proxy if the WADOProxy is enabled.
- */
-function getStowRsUrl() {
-    const server = OHIF.servers.getCurrentServer();
-    const url = `${server.wadoRoot}/studies`;
-
-    return WADOProxy.convertURL(url, server);
-}
-
 const stowSRFromMeasurements = async (measurements) => {
-    const serverUrl = getStowRsUrl();
+    const server = OHIF.servers.getCurrentServer();
+    const url = WADOProxy.convertURL(server.wadoRoot, server);
     const reportDataset = retrieveDataFromMeasurements(measurements);
-    const boundary = dcmjs.data.DicomMetaDictionary.uid();
-    const options = {
-        method: 'POST',
-        body: multipartEncode(reportDataset, boundary),
-        headers: {
-            'Content-Type': `multipart/related; type=application/dicom; boundary=${boundary}`
-        }
+    const denaturalizedMetaheader = dcmjs.data.DicomMetaDictionary.denaturalizeDataset(dataset._meta);
+    const dicomDict = new dcmjs.data.DicomDict(denaturalizedMetaheader);
+
+    dicomDict.dict = dcmjs.data.DicomMetaDictionary.denaturalizeDataset(dataset);
+
+    const part10Buffer = dicomDict.write();
+
+    // TODO: Move this elsewhere so it's not duplicated.
+    // TODO: Fix HTTP Basic Auth
+    let headers = {}
+    const apiToken = OHIF.user.getAccessToken();
+    if (apiToken) {
+        headers.Authorization = `Bearer ${apiToken}`;
+    }
+
+    const config = {
+        url,
+        headers
     };
 
-    try {
-        await DICOMWeb.makeRequest(serverUrl, options);
-        return Promise.resolve();
-    } catch(error) {
-        return Promise.reject(error);
-    }
+    const dicomWeb = new DICOMwebClient.api.DICOMwebClient(config);
+    const options = {
+        datasets: [part10Buffer]
+    };
+
+    return dicomWeb.storeInstances(options);
 };
 
 export {
